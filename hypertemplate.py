@@ -18,6 +18,16 @@ USING TEMPLATES:
 
     <--template
         --name="template-name"
+        $field-name="field-value"
+        $field-name1="field-value1"
+    >
+      <inner-html>
+    </--template>
+
+    or the alternate syntax:
+
+    <--template
+        --name="template-name"
         --fields="field-name: field-value; field-name1: field-value1"
     >
       <inner-html>
@@ -189,6 +199,20 @@ class warn:
     def print(cls):
         while warn.stack: print(warn.stack.pop())
 
+def index_ignore_quoted(text, string, begin_index=0):
+    quote = None;
+    for i in range(begin_index, len(text) - len(string)):
+        if not quote:
+            if (
+                (text[i] == '"' or text[i] == "'")
+                and not (i > 0 and text[i-1] == '\\')
+            ):
+                quote = text[i]
+            elif text[i:i + len(string)] == string:
+                return i
+        elif text[i] == quote:
+            quote = None
+
 
 def find_tag(tag_name, text):
     """Find innermost first tag of given name in given html text
@@ -206,7 +230,7 @@ def find_tag(tag_name, text):
             else: raise DocumentError("opening tag with no matching close")
 
         new_start = match.span()[0] + html_start
-        try: new_html_start = text.index(">", new_start) + 1
+        try: new_html_start = index_ignore_quoted(text, ">", new_start) + 1
         except ValueError: raise DocumentError("missing `>`")
 
         if text[new_start + 1] == '/':
@@ -226,13 +250,14 @@ def parse_attributes(tag):
     EXCEPTIONS: DocumentError on invalid tag
     """
 
-    text, n = re.subn(r"(^< *[\w-]+ *)|(\/?>$)", "", tag)
+    text, n = re.subn(r"(^<\s*[\w-]+\s*)|(\/?>$)", "", tag)
     if (n != 2): raise DocumentError(f"invalid tag `{tag}`")
 
     ret = {}
     while text != "":
-        m = re.match(r'([\w-]+) *= *"([^"\n\r]*?)" *', text)
-        if not m: raise DocumentError(f"invalid tag `{tag}`")
+        m = re.match(r'([\$\w-]+)\s*=\s*"([^"]*?)"\s*', text)
+        if not m: 
+            raise DocumentError(f"invalid tag `{tag}`")
         ret[m[1]] = m[2]
         text = text[m.end():]
 
@@ -251,14 +276,24 @@ def process_template(template, fields_provided, inner_html):
     def doc_err(msg):
         raise DocumentError(f"template {template.relpath}: {msg}")
     
-    def get_field_name(field_tag):
-        try: return parse_attributes(field_tag)["--name"]
-        except KeyError: raise BuildError(template, f"a field tag is missing the attribute `--name`")
+    def get_field_dict(field_tag):
+        ret = parse_attributes(field_tag)
+        if "--name" not in ret:
+            raise BuildError(template, f"a field tag is missing the attribute `--name`")
+        return ret
 
-    def get_field_value(field_name):
-        try:
+    def get_field_value(field_tag):
+        field = get_field_dict(field_tag)
+        field_name = field["--name"]
+        field_default_value = field.get("--default")
+
+        if field_name in fields_provided:
             value = fields_provided[field_name]
-        except KeyError: doc_err(f"field `{field_name}` required")
+        elif field_default_value is not None:
+            value = field_default_value
+        else:
+            raise doc_err(f"field `{field_name}` required")
+
         unused_fields.discard(field_name)
         return value
 
@@ -271,7 +306,7 @@ def process_template(template, fields_provided, inner_html):
     field_tags = re.finditer(r'<--field(?: +[\w-]+ *= *"[^"\n\r]*?")* *\/?>', text)
     inner_html_tags = re.finditer(r'<--inner-html(?: +[\w-]+ *= *"[^"\n\r]*?")* *\/?>', text)
 
-    subs = [mapping(t.start(), t.end(), get_field_value(get_field_name(t[0]))) for t in field_tags]
+    subs = [mapping(t.start(), t.end(), get_field_value(t[0])) for t in field_tags]
     subs += [mapping(t.start(), t.end(), inner_html) for t in inner_html_tags]
 
     for field in unused_fields:
@@ -313,18 +348,21 @@ def process_html(html_content, templates):
         raise DocumentError("template name required")
     name = attr["--name"]
 
-    fields_str = ""
-    if "--fields" in attr:
-        fields_str = attr["--fields"]
+    fields_str = attr.get("--fields")
 
     template = templates[name]
 
     fields = {}
 
-    for field_str in fields_str.split(";"):
-        field_list = field_str.split(":");
-        if len(field_list) != 2: raise DocumentError(f"couldn't parse field `{field_str}`") 
-        fields[field_list[0].strip()] = field_list[1].strip()
+    if fields_str:
+        for field_str in fields_str.split(";"):
+            field_list = field_str.split(":");
+            if len(field_list) != 2: raise DocumentError(f"couldn't parse field `{field_str}`") 
+            fields[field_list[0].strip()] = field_list[1].strip()
+
+    for name, value in attr.items():
+        if name.startswith("$"):
+            fields[name[1:]] = value;
 
     repl = process_template(template, fields, html)
 
