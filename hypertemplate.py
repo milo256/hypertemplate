@@ -201,7 +201,7 @@ class warn:
 
 def index_ignore_quoted(text, string, begin_index=0):
     quote = None;
-    for i in range(begin_index, len(text) - len(string)):
+    for i in range(begin_index, len(text) - len(string) + 1):
         if not quote:
             if (
                 (text[i] == '"' or text[i] == "'")
@@ -212,6 +212,7 @@ def index_ignore_quoted(text, string, begin_index=0):
                 return i
         elif text[i] == quote:
             quote = None
+    raise ValueError('not present')
 
 
 def find_tag(tag_name, text):
